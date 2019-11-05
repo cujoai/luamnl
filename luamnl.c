@@ -87,8 +87,14 @@ static void extract_ip(lua_State *L, int family, const struct nlattr *a)
 
 static void extract_mac(lua_State *L, const struct nlattr *a)
 {
-	if (a) lua_pushlstring(L, mnl_attr_get_payload(a), ETHER_ADDR_LEN);
-	else lua_pushnil(L);
+	if (a) {
+		const char *buf = mnl_attr_get_payload(a);
+		int64_t num = 0;
+		for (int i = 0; i < ETHER_ADDR_LEN; ++i) {
+			num += (int64_t)(buf[ETHER_ADDR_LEN - 1 - i] & 0xFF) << (i * 8);
+		}
+		lua_pushinteger(L, num);
+	} else lua_pushnil(L);
 }
 
 static void extract_protonum(lua_State *L, const struct nlattr *a)
@@ -452,46 +458,10 @@ bintoip(lua_State *L)
 	return 2;
 }
 
-static int
-mactobin(lua_State *L)
-{
-	uint8_t bin[ETHER_ADDR_LEN];
-	const char *mac = luaL_checkstring(L, 1);
-	if (sscanf(mac, " %02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
-		   &bin[0], &bin[1], &bin[2],
-		   &bin[3], &bin[4], &bin[5]) == sizeof(bin)) {
-		lua_pushlstring(L, bin, sizeof(bin));
-		return 1;
-	}
-	lua_pushnil(L);
-	lua_pushstring(L, "failed to parse mac address");
-	return 2;
-}
-
-static int
-bintomac(lua_State *L)
-{
-	size_t n;
-	const char *bin = luaL_checklstring(L, 1, &n);
-	char mac[18]; // "xx:" * 5 + "xx\0"
-	if (n == ETHER_ADDR_LEN) {
-		snprintf(mac, sizeof(mac),
-			 "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx",
-			 bin[0], bin[1], bin[2], bin[3], bin[4], bin[5]);
-		lua_pushstring(L, mac);
-		return 1;
-	}
-	lua_pushnil(L);
-	lua_pushstring(L, "failed to parse mac address");
-	return 2;
-}
-
 static const luaL_Reg functions[] = {
 	{"new",      new},
 	{"iptobin",  iptobin},
 	{"bintoip",  bintoip},
-	{"mactobin", mactobin},
-	{"bintomac", bintomac},
 	{NULL,       NULL},
 };
 
