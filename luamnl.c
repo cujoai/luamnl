@@ -1,35 +1,43 @@
-/* Copyright (C) 2019 CUJO LLC
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+/*
+ * Copyright (c) 2019, CUJO LLC.
+ * 
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ * 
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ * 
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
  */
 
-#include<string.h>
-#include<fcntl.h>
-#include<errno.h>
-#include<arpa/inet.h>
-#include<libmnl/libmnl.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include<endian.h>
-#include<linux/if.h>
-#include<netinet/ether.h>
-#include<linux/rtnetlink.h>
-#include<linux/netfilter/nfnetlink_conntrack.h>
+#include <arpa/inet.h>
+#include <endian.h>
+#include <fcntl.h>
+#include <netinet/ether.h>
 
-#include"lua.h"
-#include"lualib.h"
-#include"lauxlib.h"
+#include <linux/if.h>
+#include <linux/netfilter/nfnetlink_conntrack.h>
+#include <linux/rtnetlink.h>
+
+#include <libmnl/libmnl.h>
+
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
 
 #define MAKE_ATTR_CB(NAME, MAX)                                                \
 static int NAME(const struct nlattr *attr, void *data)                         \
@@ -40,12 +48,11 @@ static int NAME(const struct nlattr *attr, void *data)                         \
 	return MNL_CB_OK;                                                      \
 }
 
-MAKE_ATTR_CB(cta_attr_cb, CTA_MAX+1)
-MAKE_ATTR_CB(cta_proto_attr_cb, CTA_PROTO_MAX+1)
-MAKE_ATTR_CB(cta_ip_attr_cb, CTA_IP_MAX+1)
-MAKE_ATTR_CB(cta_counters_attr_cb, CTA_COUNTERS_MAX+1)
-MAKE_ATTR_CB(nda_attr_cb, NDA_MAX+1)
-#undef MAKE_ATTR_CB
+MAKE_ATTR_CB(cta_attr_cb, CTA_MAX + 1)
+MAKE_ATTR_CB(cta_proto_attr_cb, CTA_PROTO_MAX + 1)
+MAKE_ATTR_CB(cta_ip_attr_cb, CTA_IP_MAX + 1)
+MAKE_ATTR_CB(cta_counters_attr_cb, CTA_COUNTERS_MAX + 1)
+MAKE_ATTR_CB(nda_attr_cb, NDA_MAX + 1)
 
 #define LMNL_SOCKET_METATABLE "lmnl.socket"
 
@@ -57,6 +64,7 @@ struct lmnl_vtable {
 struct lmnl {
 	struct mnl_socket        *sk;
 	const struct lmnl_vtable *vt;
+	uint8_t b[0];
 };
 
 static const char *family2ipv(int family)
@@ -68,86 +76,93 @@ static const char *family2ipv(int family)
 	default: return NULL;
 	}
 }
+
 static void extract_ip(lua_State *L, int family, const struct nlattr *a)
 {
-	size_t n = 0;
-	switch (family) {
-	case AF_INET:  n = sizeof(struct in_addr);  break;
-	case AF_INET6: n = sizeof(struct in6_addr); break;
-	}
-	char b[INET6_ADDRSTRLEN];
+	size_t n = family == AF_INET ? sizeof(struct in_addr) :
+	           family == AF_INET6 ? sizeof(struct in6_addr) : 0;
 	if (a && n) lua_pushlstring(L, mnl_attr_get_payload(a), n);
 	else lua_pushnil(L);
 }
+
 static void extract_mac(lua_State *L, const struct nlattr *a)
 {
 	if (a) lua_pushlstring(L, mnl_attr_get_payload(a), ETHER_ADDR_LEN);
 	else lua_pushnil(L);
 }
+
 static void extract_protonum(lua_State *L, const struct nlattr *a)
 {
 	if (a) lua_pushinteger(L, mnl_attr_get_u8(a));
-	else   lua_pushnil(L);
+	else lua_pushnil(L);
 }
+
 static void extract_port(lua_State *L, const struct nlattr *a)
 {
 	if (a) lua_pushinteger(L, ntohs(mnl_attr_get_u16(a)));
-	else   lua_pushnil(L);
+	else lua_pushnil(L);
 }
+
 static void extract_bytes_or_packets(lua_State *L, const struct nlattr *a)
 {
 	if (a) lua_pushinteger(L, be64toh(mnl_attr_get_u64(a)));
-	else   lua_pushnil(L);
+	else lua_pushnil(L);
 }
+
 static void nf_parse_counters(lua_State *L, const struct nlattr *nest)
 {
-	const struct nlattr *tb[CTA_COUNTERS_MAX+1] = {};
+	const struct nlattr *tb[CTA_COUNTERS_MAX + 1] = {};
 	if (nest) mnl_attr_parse_nested(nest, cta_counters_attr_cb, tb);
 
 	extract_bytes_or_packets(L, tb[CTA_COUNTERS_PACKETS]);
 	extract_bytes_or_packets(L, tb[CTA_COUNTERS_BYTES]);
 }
+
 static void nf_parse_tuple_proto(lua_State *L, const struct nlattr *nest)
 {
-	const struct nlattr *tb[CTA_PROTO_MAX+1] = {};
+	const struct nlattr *tb[CTA_PROTO_MAX + 1] = {};
 	if (nest) mnl_attr_parse_nested(nest, cta_proto_attr_cb, tb);
 
 	extract_protonum(L, tb[CTA_PROTO_NUM]);
 	extract_port(L, tb[CTA_PROTO_SRC_PORT]);
 	extract_port(L, tb[CTA_PROTO_DST_PORT]);
 }
-static void nf_parse_tuple_ip(lua_State *L, int family, const struct nlattr *nest)
+
+static void nf_parse_tuple_ip(lua_State *L, int family,
+	const struct nlattr *nest)
 {
-	const struct nlattr *tb[CTA_IP_MAX+1] = {};
+	const struct nlattr *tb[CTA_IP_MAX + 1] = {};
 	if (nest) mnl_attr_parse_nested(nest, cta_ip_attr_cb, tb);
 
 	int src, dst;
 	switch (family) {
-	case AF_INET:  src = CTA_IP_V4_SRC, dst = CTA_IP_V4_DST; break;
-	case AF_INET6: src = CTA_IP_V6_SRC, dst = CTA_IP_V6_DST; break;
+	case AF_INET:  src = CTA_IP_V4_SRC; dst = CTA_IP_V4_DST; break;
+	case AF_INET6: src = CTA_IP_V6_SRC; dst = CTA_IP_V6_DST; break;
 	default: luaL_error(L, "expected AF_INET or AF_INET6.");
 	}
 	extract_ip(L, family, tb[src]);
 	extract_ip(L, family, tb[dst]);
 }
+
 static void nf_parse_tuple(lua_State *L, int family, const struct nlattr *nest)
 {
-	const struct nlattr *tb[CTA_COUNTERS_MAX+1] = {};
+	const struct nlattr *tb[CTA_COUNTERS_MAX + 1] = {};
 	if (nest) mnl_attr_parse_nested(nest, cta_counters_attr_cb, tb);
 
 	nf_parse_tuple_proto(L, tb[CTA_TUPLE_PROTO]);
 	nf_parse_tuple_ip(L, family, tb[CTA_TUPLE_IP]);
 }
+
 static int netfilter_process_cb(const struct nlmsghdr *nlh, void *data)
 {
 	lua_State *L = data;
-	const struct nlattr *tb[CTA_MAX+1] = {};
+	const struct nlattr *tb[CTA_MAX + 1] = {};
 	struct nfgenmsg *nfg = mnl_nlmsg_get_payload(nlh);
 	mnl_attr_parse(nlh, sizeof(*nfg), cta_attr_cb, tb);
 
 	lua_getuservalue(L, 1);
-	int n = lua_gettop(L),
-	    isnew = (nlh->nlmsg_flags & (NLM_F_CREATE|NLM_F_EXCL)) != 0;
+	int n = lua_gettop(L);
+	int isnew = (nlh->nlmsg_flags & (NLM_F_CREATE | NLM_F_EXCL)) != 0;
 	switch (nlh->nlmsg_type & 0xff) {
 	case IPCTNL_MSG_CT_NEW:
 		lua_pushstring(L, isnew ? "new" : "update");
@@ -155,7 +170,9 @@ static int netfilter_process_cb(const struct nlmsghdr *nlh, void *data)
 	case IPCTNL_MSG_CT_DELETE:
 		lua_pushstring(L, "del");
 		break;
-	default: return MNL_CB_OK;
+	default:
+		lua_pop(L, 1);
+		return MNL_CB_OK;
 	}
 	lua_pushlightuserdata(L, (void *)mnl_attr_get_u64(tb[CTA_ID]));
 	lua_pushstring(L, family2ipv(nfg->nfgen_family));
@@ -163,14 +180,14 @@ static int netfilter_process_cb(const struct nlmsghdr *nlh, void *data)
 	nf_parse_counters(L, tb[CTA_COUNTERS_ORIG]);
 	nf_parse_tuple(L, nfg->nfgen_family, tb[CTA_TUPLE_REPLY]);
 	nf_parse_counters(L, tb[CTA_COUNTERS_REPLY]);
-	if (lua_pcall(L, lua_gettop(L) - n, 0, 0) != LUA_OK)
-		luaL_error(L, lua_tostring(L, -1));
-	return MNL_CB_OK;
+	return lua_pcall(L, lua_gettop(L) - n, 0, 0) != LUA_OK ?
+		MNL_CB_ERROR : MNL_CB_OK;
 }
+
 static int route_process_cb(const struct nlmsghdr *nlh, void *data)
 {
 	lua_State *L = data;
-	const struct nlattr *tb[NDA_MAX+1] = {};
+	const struct nlattr *tb[NDA_MAX + 1] = {};
 	struct ndmsg *ndm = mnl_nlmsg_get_payload(nlh);
 	mnl_attr_parse(nlh, sizeof(*ndm), nda_attr_cb, tb);
 
@@ -180,15 +197,16 @@ static int route_process_cb(const struct nlmsghdr *nlh, void *data)
 	case RTM_DELNEIGH: lua_pushstring(L, "del"); break;
 	case RTM_GETNEIGH: lua_pushstring(L, "get"); break;
 	case RTM_NEWNEIGH: lua_pushstring(L, "new"); break;
-	default: return MNL_CB_OK;
+	default:
+		lua_pop(L, 1);
+		return MNL_CB_OK;
 	}
 	lua_pushstring(L, family2ipv(ndm->ndm_family));
 	lua_pushinteger(L, ndm->ndm_ifindex);
 	extract_mac(L, tb[NDA_LLADDR]);
 	extract_ip(L, ndm->ndm_family, tb[NDA_DST]);
-	if (lua_pcall(L, lua_gettop(L) - n, 0, 0) != LUA_OK)
-		luaL_error(L, lua_tostring(L, -1));
-	return MNL_CB_OK;
+	return lua_pcall(L, lua_gettop(L) - n, 0, 0) != LUA_OK ?
+		MNL_CB_ERROR : MNL_CB_OK;
 }
 
 static struct lmnl *lmnl_getudata(lua_State *L, int i)
@@ -199,6 +217,7 @@ static struct lmnl *lmnl_getudata(lua_State *L, int i)
 }
 
 typedef int (*getflags)(lua_State *, const char *);
+
 static int netfilter_getflags(lua_State *L, const char *mode)
 {
 	int flags = 0;
@@ -226,14 +245,18 @@ static int route_getflags(lua_State *L, const char *mode)
 static int process_cb(lua_State *L)
 {
 	struct lmnl *me = lmnl_getudata(L, 1);
-	char b[MNL_SOCKET_BUFFER_SIZE];
-	int n = mnl_socket_recvfrom(me->sk, b, sizeof(b));
-	if (n > 0 && mnl_cb_run(b, n, 0, 0, me->vt->process_cb, L) == MNL_CB_OK) {
-		lua_pushboolean(L, true);
-		return 1;
+	int n = mnl_socket_recvfrom(me->sk, me->b, MNL_SOCKET_BUFFER_SIZE);
+	if (n > 0) {
+		if (mnl_cb_run(me->b, n, 0, 0, me->vt->process_cb, L) ==
+		    MNL_CB_ERROR) {
+			return lua_error(L);
+		} else {
+			lua_pushboolean(L, true);
+			return 1;
+		}
 	}
 	lua_pushnil(L);
-	lua_pushstring(L, (n == EAGAIN || n == EWOULDBLOCK) ?
+	lua_pushstring(L, n == EAGAIN || n == EWOULDBLOCK ?
 		       "timeout" : strerror(errno));
 	return 2;
 }
@@ -305,20 +328,31 @@ static int trigger(lua_State *L)
 
 static bool setfdnonblock(int fd, bool yes)
 {
-	int oldflags = fcntl(fd, F_GETFL, 0), ok,
-	    newflags = yes?
-	      (oldflags |  O_NONBLOCK):
-	      (oldflags &~ O_NONBLOCK);
+	int oldflags = fcntl(fd, F_GETFL, 0);
+	int newflags = yes ?  (oldflags |  O_NONBLOCK):
+	      (oldflags & ~O_NONBLOCK);
 	return (oldflags != -1) && fcntl(fd, F_SETFL, newflags) != -1;
 }
 
 static int setnonblock(lua_State *L)
 {
 	struct lmnl *me = lmnl_getudata(L, 1);
-	int yes = lua_toboolean(L, 2), ok,
-	    fd = mnl_socket_get_fd(me->sk);
+	int yes = lua_toboolean(L, 2);
+	int fd = mnl_socket_get_fd(me->sk);
 	if (!setfdnonblock(fd, yes))
 		luaL_error(L, "failed to change blocking state with: %s.",
+			   strerror(errno));
+	return 0;
+}
+
+static int setrxsize(lua_State *L)
+{
+	struct lmnl *me = lmnl_getudata(L, 1);
+	size_t newsize = lua_tointeger(L, 2);
+	if (setsockopt(mnl_socket_get_fd(me->sk),
+			     SOL_SOCKET, SO_RCVBUFFORCE,
+			     &newsize, sizeof(newsize)) != 0)
+		luaL_error(L, "failed to change receive buffer size: %s.",
 			   strerror(errno));
 	return 0;
 }
@@ -334,13 +368,14 @@ static const struct lmnl_vtable netfilter_vtable = {
 };
 
 static const luaL_Reg lmnl_methods[] = {
-	{"__gc",       gc},
-	{"close",      gc},
-	{"getfd",      getfd},
-	{"process",    process_cb},
-	{"setnonblock",setnonblock},
-	{"trigger",    trigger},
-	{NULL,         NULL},
+	{"__gc",        gc},
+	{"close",       gc},
+	{"getfd",       getfd},
+	{"process",     process_cb},
+	{"setnonblock", setnonblock},
+	{"setrxsize",   setrxsize},
+	{"trigger",     trigger},
+	{NULL,          NULL},
 };
 
 static int new(lua_State *L)
@@ -355,14 +390,15 @@ static int new(lua_State *L)
 	int flags = getflags[i](L, luaL_optstring(L, 3, ""));
 
 	struct mnl_socket *sk = mnl_socket_open(busnums[i]);
-	if (sk == NULL) goto cleanup0;
+	if (sk == NULL) goto cleanup;
 
-	if (mnl_socket_bind(sk, flags, MNL_SOCKET_AUTOPID) < 0) goto cleanup1;
+	if (mnl_socket_bind(sk, flags, MNL_SOCKET_AUTOPID) < 0) goto cleanup;
 
-	struct lmnl *me = lua_newuserdata(L, sizeof(*me));
-	if (me == NULL) goto cleanup1;
-	me->sk = sk;
-	me->vt = vts[i];
+	struct lmnl *me = lua_newuserdata(L,
+		sizeof(struct lmnl) + MNL_SOCKET_BUFFER_SIZE);
+	if (me == NULL) goto cleanup;
+	me->sk  = sk;
+	me->vt  = vts[i];
 
 	luaL_getmetatable(L, LMNL_SOCKET_METATABLE);
 	lua_setmetatable(L, -2);
@@ -373,9 +409,8 @@ static int new(lua_State *L)
 	setfdnonblock(mnl_socket_get_fd(sk), true);
 	return 1;
 
-cleanup1:
-	mnl_socket_close(sk);
-cleanup0:
+cleanup:
+	if (sk) mnl_socket_close(sk);
 	luaL_error(L, "failed to create nml socket");
 	return 0;
 }
@@ -451,7 +486,6 @@ bintomac(lua_State *L)
 	return 2;
 }
 
-
 static const luaL_Reg functions[] = {
 	{"new",      new},
 	{"iptobin",  iptobin},
@@ -461,7 +495,8 @@ static const luaL_Reg functions[] = {
 	{NULL,       NULL},
 };
 
-LUAMOD_API int luaopen_cujo_mnl(lua_State *L) {
+LUAMOD_API int luaopen_cujo_mnl(lua_State *L)
+{
 	luaL_newmetatable(L, LMNL_SOCKET_METATABLE);
 	lua_pushvalue(L, -1);
 	lua_setfield(L, -2, "__index");
@@ -469,4 +504,3 @@ LUAMOD_API int luaopen_cujo_mnl(lua_State *L) {
 	luaL_newlib(L, functions);
 	return 1;
 }
-
