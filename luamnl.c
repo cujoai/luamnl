@@ -163,8 +163,15 @@ static int netfilter_process_cb(const struct nlmsghdr *nlh, void *data)
 	nf_parse_counters(L, tb[CTA_COUNTERS_ORIG]);
 	nf_parse_tuple(L, nfg->nfgen_family, tb[CTA_TUPLE_REPLY]);
 	nf_parse_counters(L, tb[CTA_COUNTERS_REPLY]);
+
+	int orig_errno = errno;
 	if (lua_pcall(L, lua_gettop(L) - n, 0, 0) != LUA_OK)
 		luaL_error(L, lua_tostring(L, -1));
+
+	// Don't let the Lua callback propagate errno out from mnl_cb_run. Most
+	// likely orig_errno = 0 or we wouldn't get this far, but play it safe.
+	errno = orig_errno;
+
 	return MNL_CB_OK;
 }
 static int route_process_cb(const struct nlmsghdr *nlh, void *data)
@@ -227,15 +234,36 @@ static int process_cb(lua_State *L)
 {
 	struct lmnl *me = lmnl_getudata(L, 1);
 	char b[MNL_SOCKET_BUFFER_SIZE];
-	int n = mnl_socket_recvfrom(me->sk, b, sizeof(b));
-	if (n > 0 && mnl_cb_run(b, n, 0, 0, me->vt->process_cb, L) == MNL_CB_OK) {
-		lua_pushboolean(L, true);
-		return 1;
+	int n;
+
+	do {
+		n = mnl_socket_recvfrom(me->sk, b, sizeof(b));
+	} while (n < 0 && errno == EINTR);
+
+	if (n < 0) {
+		lua_pushnil(L);
+		lua_pushstring(L, (errno == EAGAIN || errno == EWOULDBLOCK) ?
+			       "timeout" : strerror(errno));
+		return 2;
 	}
-	lua_pushnil(L);
-	lua_pushstring(L, (n == EAGAIN || n == EWOULDBLOCK) ?
-		       "timeout" : strerror(errno));
-	return 2;
+	if (n > 0) {
+		int mnl_ret;
+		errno = 0;
+		mnl_ret = mnl_cb_run(b, n, 0, 0, me->vt->process_cb, L);
+		if (errno != 0) {
+			lua_pushnil(L);
+			lua_pushstring(L, strerror(errno));
+			return 2;
+		}
+		if (mnl_ret <= MNL_CB_ERROR) {
+			lua_pushnil(L);
+			lua_pushfstring(L, "internal error %d, callback should never fail",
+					mnl_ret);
+			return 2;
+		}
+	}
+	lua_pushboolean(L, true);
+	return 1;
 }
 
 static int gc(lua_State *L)
